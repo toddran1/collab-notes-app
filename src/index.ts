@@ -67,9 +67,9 @@ const resolvers = {
 
       const userIds = [...new Set(notes.map((n: any) => n.userId))];
       const usersRes = await pool.query(
-        `SELECT id, email, name FROM "User" WHERE id = ANY($1::text[])`,
+        `SELECT id, email, name FROM "User" WHERE id = ANY($1::uuid[])`,
         [userIds]
-      );
+        );
       const userMap = Object.fromEntries(usersRes.rows.map((u: any) => [u.id, u]));
 
       return notes.map((note: any) => ({
