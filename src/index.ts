@@ -24,12 +24,40 @@ const typeDefs = gql`
     users: [User!]!
     notes: [Note!]!
   }
+
+  type Mutation {
+    createUser(email: String!, name: String): User!
+    createNote(title: String!, content: String!, userId: String!): Note!
+  }
 `;
 
 const resolvers = {
   Query: {
     users: async () => await prisma.user.findMany({ include: { notes: true } }),
     notes: async () => await prisma.note.findMany({ include: { user: true } }),
+  },
+  Mutation: {
+    createUser: async (_: any, args: { email: string; name?: string }) => {
+      return await prisma.user.create({
+        data: {
+          email: args.email,
+          name: args.name,
+        },
+      });
+    },
+    createNote: async (
+      _: any,
+      args: { title: string; content: string; userId: string }
+    ) => {
+      return await prisma.note.create({
+        data: {
+          title: args.title,
+          content: args.content,
+          userId: args.userId,
+        },
+        include: { user: true },
+      });
+    },
   },
 };
 
