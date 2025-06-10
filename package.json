@@ -1,0 +1,22 @@
+{
+  "name": "collab-notes-app",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "apollo-server-express": "^3.13.0",
+    "express": "^4.21.2",
+    "graphql": "^16.11.0"
+  }
+}
