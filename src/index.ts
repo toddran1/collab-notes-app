@@ -6,17 +6,22 @@ import { makeExecutableSchema } from "@graphql-tools/schema";
 import { gql } from "graphql-tag";
 import { useServer } from "graphql-ws/lib/use/ws";
 import { WebSocketServer } from "ws";
-import { PrismaClient } from "@prisma/client";
+import { Pool } from "pg";
 import cors from "cors";
 import bodyParser from "body-parser";
-
-const prisma = new PrismaClient();
-
-// PubSub implementation (lightweight, in-memory)
 import { PubSub } from "graphql-subscriptions";
 
 const pubsub = new PubSub();
 const NOTE_ADDED = "noteAdded";
+
+// --- PostgreSQL Setup ---
+const pool = new Pool({
+  host: process.env.DB_HOST || "db",
+  port: parseInt(process.env.DB_PORT || "5432"),
+  user: process.env.DB_USER || "postgres",
+  password: process.env.DB_PASSWORD || "postgres",
+  database: process.env.DB_NAME || "collab_notes",
+});
 
 // --- GraphQL Schema ---
 const typeDefs = gql`
@@ -49,24 +54,58 @@ const typeDefs = gql`
   }
 `;
 
-// --- Resolvers ---
+// --- GraphQL Resolvers ---
 const resolvers = {
   Query: {
-    users: () => prisma.user.findMany({ include: { notes: true } }),
-    notes: () => prisma.note.findMany({ include: { user: true } }),
+    users: async () => {
+      const res = await pool.query(`SELECT * FROM "User"`);
+      return res.rows;
+    },
+    notes: async () => {
+      const res = await pool.query(`SELECT * FROM "Note"`);
+      const notes = res.rows;
+
+      const userIds = [...new Set(notes.map((n: any) => n.userId))];
+      const usersRes = await pool.query(
+        `SELECT id, email, name FROM "User" WHERE id = ANY($1::text[])`,
+        [userIds]
+      );
+      const userMap = Object.fromEntries(usersRes.rows.map((u: any) => [u.id, u]));
+
+      return notes.map((note: any) => ({
+        ...note,
+        user: userMap[note.userId],
+      }));
+    },
   },
+
   Mutation: {
-    createUser: (_: any, args: { email: string; name?: string }) =>
-      prisma.user.create({ data: args }),
+    createUser: async (_: any, args: { email: string; name?: string }) => {
+      const res = await pool.query(
+        `INSERT INTO "User" (email, name) VALUES ($1, $2) RETURNING *`,
+        [args.email, args.name || null]
+      );
+      return res.rows[0];
+    },
+
     createNote: async (_: any, args: { title: string; content: string; userId: string }) => {
-      const createdNote = await prisma.note.create({ data: args });
+      const noteRes = await pool.query(
+        `INSERT INTO "Note" (title, content, "userId") VALUES ($1, $2, $3) RETURNING *`,
+        [args.title, args.content, args.userId]
+      );
+      const note = noteRes.rows[0];
 
-        const fullNote = await prisma.note.findUnique({
-        where: { id: createdNote.id },
-        include: { user: true },
-        });
+      const userRes = await pool.query(
+        `SELECT id, email, name FROM "User" WHERE id = $1`,
+        [note.userId]
+      );
 
-        console.log("🔥 fullNote before publish:", fullNote);
+      const fullNote = {
+        ...note,
+        user: userRes.rows[0],
+      };
+
+      console.log("🔥 fullNote before publish:", fullNote);
 
         await pubsub.publish("noteAdded", {
             noteAdded: fullNote,
@@ -75,6 +114,7 @@ const resolvers = {
       return fullNote;
     },
   },
+
   Subscription: {
     noteAdded: {
       subscribe: () => (pubsub as any).asyncIterator(["noteAdded"]),
@@ -82,29 +122,35 @@ const resolvers = {
         console.log("🧪 Subscription received payload:", payload);
         return payload?.noteAdded ?? null;
         }
-    }
-  }
+    },
+  },
+
+  User: {
+    notes: async (parent: any) => {
+      const res = await pool.query(
+        `SELECT * FROM "Note" WHERE "userId" = $1`,
+        [parent.id]
+      );
+      return res.rows;
+    },
+  },
 };
 
-// --- Create Schema and Server ---
+// --- Server Setup ---
 const schema = makeExecutableSchema({ typeDefs, resolvers });
 
 async function startServer() {
   const app = express();
   const httpServer = http.createServer(app);
 
-  // Create WebSocket server
   const wsServer = new WebSocketServer({
     server: httpServer,
     path: "/graphql",
   });
 
-  const serverCleanup = useServer({ schema }, wsServer);
+  useServer({ schema }, wsServer);
 
-  const server = new ApolloServer({
-    schema,
-  });
-
+  const server = new ApolloServer({ schema });
   await server.start();
 
   app.use(
