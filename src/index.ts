@@ -10,6 +10,22 @@ import { Pool } from "pg";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { PubSub } from "graphql-subscriptions";
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+
+const JWT_SECRET = process.env.JWT_SECRET || "fallbacksecret"; // for dev safety
+
+// Hash password
+const hashPassword = async (password: string) => {
+  const salt = await bcrypt.genSalt(10);
+  return await bcrypt.hash(password, salt);
+};
+
+// Compare password
+const isValidPassword = (password: string, hash: string) => bcrypt.compare(password, hash);
+
+// Sign JWT
+const signToken = (user: any) => jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "1h" });
 
 const pubsub = new PubSub();
 const NOTE_ADDED = "noteAdded";
@@ -44,8 +60,21 @@ const typeDefs = gql`
     notes: [Note!]!
   }
 
+  type AuthPayload {
+    token: String!
+    user: User!
+  }
+
+  input RegisterInput {
+    email: String!
+    name: String
+    password: String!
+  }
+
   type Mutation {
-    createUser(email: String!, name: String): User!
+    register(input: RegisterInput): AuthPayload!
+    login(email: String!, password: String!): AuthPayload!
+    createUser(email: String!, name: String): User! # (can later remove if replaced by register)
     createNote(title: String!, content: String!, userId: String!): Note!
   }
 
@@ -80,6 +109,28 @@ const resolvers = {
   },
 
   Mutation: {
+    register: async (_: any, { input }: any) => {
+        const { email, name, password } = input;
+        const hashed = await hashPassword(password);
+        const res = await pool.query(
+            `INSERT INTO "User" (email, name, password) VALUES ($1, $2, $3) RETURNING *`,
+            [email, name || null, hashed]
+        );
+        const user = res.rows[0];
+        const token = signToken(user);
+        return { token, user };
+    },
+    login: async (_: any, { email, password }: any) => {
+        const res = await pool.query(`SELECT * FROM "User" WHERE email = $1`, [email]);
+        const user = res.rows[0];
+        if (!user) throw new Error("Invalid credentials");
+
+        const valid = await isValidPassword(password, user.password);
+        if (!valid) throw new Error("Invalid credentials");
+
+        const token = signToken(user);
+        return { token, user };
+    },
     createUser: async (_: any, args: { email: string; name?: string }) => {
       const res = await pool.query(
         `INSERT INTO "User" (email, name) VALUES ($1, $2) RETURNING *`,
@@ -153,12 +204,35 @@ async function startServer() {
   const server = new ApolloServer({ schema });
   await server.start();
 
+  const getUserFromToken = (token: string) => {
+    try {
+        return jwt.verify(token, JWT_SECRET) as { userId: string };
+    } catch {
+        return null;
+    }
+  };
+
   app.use(
     "/graphql",
     cors(),
     bodyParser.json(),
-    expressMiddleware(server)
+    expressMiddleware(server, {
+        context: async ({ req }) => {
+        const token = req.headers.authorization?.split(" ")[1]; // Bearer <token>
+        const user = token ? getUserFromToken(token) : null;
+        return { user };
+        },
+    })
   );
+
+  // Global error handler middleware
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("💥 Unhandled Error:", err);
+  res.status(500).json({
+    message: "Internal server error",
+    ...(process.env.NODE_ENV === "development" && { error: err.message }),
+  });
+});
 
   const PORT = process.env.PORT || 4000;
   httpServer.listen(PORT, () => {
