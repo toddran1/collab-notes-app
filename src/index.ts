@@ -188,9 +188,9 @@ const resolvers = {
 };
 
 // --- Server Setup ---
-const schema = makeExecutableSchema({ typeDefs, resolvers });
+export const schema = makeExecutableSchema({ typeDefs, resolvers });
 
-async function startServer() {
+async function startServer(port = 4000) {
   const app = express();
   const httpServer = http.createServer(app);
 
